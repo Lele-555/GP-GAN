@@ -2,11 +2,21 @@ import cv2
 import os
 import numpy as np
 from mtcnn import MTCNN
+import tensorflow as tf
+
+# Ensure TensorFlow uses GPU
+physical_devices = tf.config.list_physical_devices('GPU')
+if physical_devices:
+    try:
+        tf.config.experimental.set_memory_growth(physical_devices[0], True)
+        tf.config.set_visible_devices(physical_devices[0], 'GPU')
+        print("TensorFlow is using GPU.")
+    except RuntimeError as e:
+        print(e)
 
 # Parameters
 video_path = 'test.mp4'  # Path to the video file
 output_dir = 'extracted_faces'         # Directory to save the extracted faces
-img_shape = (32, 32, 3)                # Size of the output images
 frame_interval = 5                     # Process every 5th frame to speed up
 
 # Create the output directory if it doesn't exist
@@ -43,12 +53,9 @@ while True:
         # Extract the face from the frame
         face_img = frame[y:y+h, x:x+w]
 
-        # Resize the face to the desired size
-        face_resized = cv2.resize(face_img, (img_shape[0], img_shape[1]))
-
         # Save the face image
-        face_filename = os.path.join(output_dir, f'face_{frame_count}_{face_count}.png')
-        cv2.imwrite(face_filename, face_resized)
+        face_filename = os.path.join(output_dir, f'face_{face_count}.png')
+        cv2.imwrite(face_filename, face_img)
         face_count += 1
 
     print(f'Processed frame {frame_count}, found {len(faces)} faces.')

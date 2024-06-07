@@ -10,51 +10,66 @@ from keras import layers
 from keras import models
 from keras.optimizers import Adam
 
+gpus = tf.config.experimental.list_physical_devices('GPU')
+for gpu in gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
 
 
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
-
-# Set CPU parallelism threads
-tf.config.threading.set_inter_op_parallelism_threads(4)
-tf.config.threading.set_intra_op_parallelism_threads(4)
-
-dir_data = "data/img_align_celeba/"
-Ntrain = 200000
-Ntest = 100
-nm_imgs = sorted(os.listdir(dir_data))  # Sort the list of file names
-nm_imgs_train = nm_imgs[:Ntrain]
-nm_imgs_test = nm_imgs[Ntrain:Ntrain + Ntest]
+dir_real_faces = "data/img_align_celeba"
+dir_fake_faces = "ai_generated_faces"
 img_shape = (32, 32, 3)
 
+def get_npdata(dir_real, dir_fake, img_shape, max_images=900):
+    X_real = []
+    X_fake = []
 
-def get_npdata(nm_imgs_train):
-    X_train = []
-    for i, myid in enumerate(nm_imgs_train):
-        image = load_img(dir_data + "/" + myid, target_size=img_shape[:2])
+    real_images = sorted(os.listdir(dir_real))
+    fake_images = sorted(os.listdir(dir_fake))
+
+    for img_name in real_images[:max_images]:
+        image = load_img(os.path.join(dir_real, img_name), target_size=img_shape[:2])
         image = img_to_array(image) / 255.0
-        X_train.append(image)
-    X_train = np.array(X_train)
-    return X_train
+        X_real.append(image)
+
+    for img_name in fake_images[:max_images]:
+        image = load_img(os.path.join(dir_fake, img_name), target_size=img_shape[:2])
+        image = img_to_array(image) / 255.0
+        X_fake.append(image)
+
+    X_real = np.array(X_real)
+    X_fake = np.array(X_fake)
+
+    return X_real, X_fake
 
 
-X_train = get_npdata(nm_imgs_train)
-print("X_train.shape =", X_train.shape)
+# def get_npdata(dir_real, dir_fake, img_shape):
+#     X_real = []
+#     X_fake = []
 
-X_test = get_npdata(nm_imgs_test)
-print("X_test.shape =", X_test.shape)
+#     real_images = sorted(os.listdir(dir_real))
+#     fake_images = sorted(os.listdir(dir_fake))
 
-# Plot the resized input images
-fig = plt.figure(figsize=(30, 10))
-nplot = 7
-for count in range(1, nplot):
-    ax = fig.add_subplot(1, nplot, count)
-    ax.imshow(X_train[count])
-plt.show()
+#     for img_name in real_images:
+#         image = load_img(os.path.join(dir_real, img_name), target_size=img_shape[:2])
+#         image = img_to_array(image) / 255.0
+#         X_real.append(image)
 
+#     for img_name in fake_images:
+#         image = load_img(os.path.join(dir_fake, img_name), target_size=img_shape[:2])
+#         image = img_to_array(image) / 255.0
+#         X_fake.append(image)
+
+#     X_real = np.array(X_real)
+#     X_fake = np.array(X_fake)
+
+#     return X_real, X_fake
+
+X_real, X_fake = get_npdata(dir_real_faces, dir_fake_faces, img_shape)
+print("X_real.shape =", X_real.shape)
+print("X_fake.shape =", X_fake.shape)
 
 optimizer = Adam(0.00007, 0.5)
 noise_shape = (100,)
-
 
 def build_generator(img_shape, noise_shape=(100,)):
     input_noise = layers.Input(shape=noise_shape)
@@ -78,35 +93,8 @@ def build_generator(img_shape, noise_shape=(100,)):
     model.summary()
     return model
 
-
 generator = build_generator(img_shape, noise_shape=noise_shape)
 generator.compile(loss='binary_crossentropy', optimizer=optimizer)
-
-
-def get_noise(nsample=1, nlatent_dim=100):
-    noise = np.random.normal(0, 1, (nsample, nlatent_dim))
-    return noise
-
-
-def plot_generated_images(noise, path_save=None, titleadd=""):
-    imgs = generator.predict(noise)
-    fig = plt.figure(figsize=(40, 10))
-    for i, img in enumerate(imgs):
-        ax = fig.add_subplot(1, nsample, i + 1)
-        ax.imshow(img)
-    fig.suptitle("Generated images " + titleadd, fontsize=30)
-
-    if path_save is not None:
-        plt.savefig(path_save, bbox_inches='tight', pad_inches=0)
-        plt.close()
-    else:
-        plt.show()
-
-
-nsample = 4
-noise = get_noise(nsample=nsample, nlatent_dim=noise_shape[0])
-plot_generated_images(noise)
-
 
 def build_discriminator(img_shape, noutput=1):
     input_img = layers.Input(shape=img_shape)
@@ -130,13 +118,33 @@ def build_discriminator(img_shape, noutput=1):
 
     return model
 
-
 discriminator = build_discriminator(img_shape)
-discriminator.compile(loss='binary_crossentropy',
-                      optimizer=optimizer,
-                      metrics=['accuracy'])
-
+discriminator.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 discriminator.summary()
+
+def train_discriminator(discriminator, X_real, X_fake, epochs=1000, batch_size=128):
+    half_batch = int(batch_size / 2)
+    history = []
+
+    for epoch in range(epochs):
+        idx_real = np.random.randint(0, X_real.shape[0], half_batch)
+        idx_fake = np.random.randint(0, X_fake.shape[0], half_batch)
+
+        real_imgs = X_real[idx_real]
+        fake_imgs = X_fake[idx_fake]
+
+        d_loss_real = discriminator.train_on_batch(real_imgs, np.ones((half_batch, 1)))
+        d_loss_fake = discriminator.train_on_batch(fake_imgs, np.zeros((half_batch, 1)))
+        d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+
+        history.append(d_loss)
+
+        if epoch % 100 == 0:
+            print("Epoch {:05.0f} [D loss: {:4.3f}, acc.: {:05.1f}%]".format(epoch, d_loss[0], 100 * d_loss[1]))
+
+    return history
+
+discriminator_history = train_discriminator(discriminator, X_real, X_fake)
 
 z = layers.Input(shape=noise_shape)
 img = generator(z)
@@ -148,6 +156,23 @@ combined = models.Model(z, valid)
 combined.compile(loss='binary_crossentropy', optimizer=optimizer)
 combined.summary()
 
+def get_noise(nsample=1, nlatent_dim=100):
+    noise = np.random.normal(0, 1, (nsample, nlatent_dim))
+    return noise
+
+def plot_generated_images(noise, path_save=None, titleadd=""):
+    imgs = generator.predict(noise)
+    fig = plt.figure(figsize=(40, 10))
+    for i, img in enumerate(imgs):
+        ax = fig.add_subplot(1, len(imgs), i + 1)
+        ax.imshow(img)
+    fig.suptitle("Generated images " + titleadd, fontsize=30)
+
+    if path_save is not None:
+        plt.savefig(path_save, bbox_inches='tight', pad_inches=0)
+        plt.close()
+    else:
+        plt.show()
 
 def train(models, X_train, noise_plot, dir_result="./result/", epochs=10000, batch_size=128):
     combined, discriminator, generator = models
@@ -181,12 +206,11 @@ def train(models, X_train, noise_plot, dir_result="./result/", epochs=10000, bat
             plot_generated_images(noise_plot,
                                   path_save=dir_result + "/image_{:05.0f}.png".format(epoch),
                                   titleadd="Epoch {}".format(epoch))
-        if epoch % 1000 == 0:
-            plot_generated_images(noise_plot,
-                                  titleadd="Epoch {}".format(epoch))
+        # if epoch % 1000 == 0:
+        #     plot_generated_images(noise_plot,
+        #                           titleadd="Epoch {}".format(epoch))
 
     return history
-
 
 dir_result = "./result_GAN/"
 
@@ -199,7 +223,23 @@ start_time = time.time()
 
 _models = combined, discriminator, generator
 
-history = train(_models, X_train, noise, dir_result=dir_result, epochs=20000, batch_size=128 * 8)
+history = train(_models, X_real, get_noise(nsample=4, nlatent_dim=noise_shape[0]), dir_result=dir_result, epochs=500, batch_size=128 * 8)
 end_time = time.time()
 print("-" * 10)
 print("Time took: {:4.2f} min".format((end_time - start_time) / 60))
+
+def evaluate_frames(discriminator, frame_paths, img_shape):
+    images = []
+    for frame_path in frame_paths:
+        image = load_img(frame_path, target_size=img_shape[:2])
+        image = img_to_array(image) / 255.0
+        images.append(image)
+    images = np.array(images)
+    predictions = discriminator.predict(images)
+    return predictions
+
+video_frames_dir = "extracted_faces"
+frame_paths = [os.path.join(video_frames_dir, fname) for fname in os.listdir(video_frames_dir) if fname.endswith('.png')]
+predictions = evaluate_frames(discriminator, frame_paths, img_shape)
+for i, prediction in enumerate(predictions):
+    print(f"Image  AI gener{i}ated: {prediction[0] > 0.5}")
